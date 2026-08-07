@@ -1,0 +1,35 @@
+{
+  "name": "openlibing-metadata-collect",
+  "version": "1.0.0",
+  "description": "GitCode Actions plugin for collecting pytest test case metadata",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc && ncc build dist/index.js --license licenses.txt",
+    "compile": "tsc",
+    "package": "npm run build && zip -r openlibing-metadata-collect-v$(node -p \"require('./package.json').version\").zip dist/ action.yml"
+  },
+  "keywords": [
+    "gitcode",
+    "actions",
+    "pytest",
+    "testcase",
+    "collector"
+  ],
+  "author": "openlibing",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/exec": "^1.1.1"
+  },
+  "overrides": {
+    "undici": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@vercel/ncc": "^0.38.1",
+    "typescript": "^5.0.0"
+  }
+}

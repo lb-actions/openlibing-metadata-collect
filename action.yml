@@ -1,0 +1,26 @@
+name: 'Pytest Testcase Collector'
+description: 'Collect pytest test case metadata and generate XML report'
+author: 'openlibing'
+
+inputs:
+  testcase-path:
+    description: '测试用例目录路径'
+    required: true
+  metadata-output-path:
+    description: 'XML 输出文件路径，文件名必须以 metadata 开头。默认使用工作目录下的 metadata_test.xml。在并发场景下，请指定不同的路径以避免覆盖'
+    required: false
+    default: 'metadata_test.xml'
+  pytest-config-file:
+    description: 'pytest 配置文件路径（如 pytest.ini）'
+    required: false
+  testcase-collector-url:
+    description: 'testcase-collector wheel download URL'
+    required: false
+
+outputs:
+  metadata-output-path:
+    description: '生成的 XML 文件绝对路径'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
