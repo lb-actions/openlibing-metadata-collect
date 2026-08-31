@@ -4,8 +4,9 @@ author: 'openlibing'
 
 inputs:
   testcase-path:
-    description: '测试用例目录路径'
-    required: true
+    description: '测试用例目录路径。指定 pytest-config-file 且由其 testpaths 决定收集范围时可省略'
+    required: false
+    default: ''
   metadata-output-path:
     description: 'XML 输出文件路径，文件名必须以 metadata 开头。默认使用工作目录下的 metadata_test.xml。在并发场景下，请指定不同的路径以避免覆盖'
     required: false
@@ -13,9 +14,10 @@ inputs:
   pytest-config-file:
     description: 'pytest 配置文件路径（如 pytest.ini）'
     required: false
-  testcase-collector-url:
-    description: 'testcase-collector wheel download URL'
+  rootdir:
+    description: 'pytest rootdir 覆盖路径。指定后通过 --rootdir 传给 pytest，作为 testpaths 与相对路径的解析基准；省略时由 pytest-config-file 所在目录或 testcase-path 决定'
     required: false
+    default: ''
 
 outputs:
   metadata-output-path:
