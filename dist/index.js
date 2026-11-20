@@ -133,34 +133,61 @@ async function runPytest(pythonCommand, testcasePath, pytestConfigFile, rootdir,
     }
 }
 /**
- * 通过 curl 下载文件到本地，自动跟随重定向并重试 (FIND-02)。
- * curl -L 自动跟随 GitCode release 的 302 CDN 重定向，--retry 容错瞬时网络错误。
+ * 执行 unittest 收集用例
+ *
+ * 直接运行 action 仓库内置的 scripts/unittest_collector.py 独立脚本，
+ * 不依赖 pytest_testcase_collector wheel 包。
+ * 通过 unittest.TestLoader().discover() 发现测试用例并生成元数据 XML。
  */
-async function downloadToFile(url, dest) {
-    await exec.exec("curl", [
-        "-fsSL", // -f HTTP 错误返回非零, -s 静默进度, -S 显示错误, -L 跟随重定向
-        "--retry",
-        "3", // 瞬时错误重试 3 次
-        "-o",
-        dest,
-        url,
-    ]);
-    // 临时文件权限加固，限制其他用户读取
-    fs.chmodSync(dest, 0o600);
-}
-/**
- * 下载 wheel 到随机临时目录并返回本地路径 (FIND-03)。
- * 保留 URL 中的原始 wheel 文件名，使 pip 能按 PEP 427 解析元数据，
- * 否则报 "not a valid wheel filename"。
- */
-async function downloadAndVerifyWheel(url) {
-    // 随机临时目录避免可预测路径被预创建/符号链接竞争 (FIND-03)；
-    // 保留 URL 中的原始 wheel 文件名，使 pip 能按 PEP 427 解析元数据，否则报 "not a valid wheel filename"
-    const wheelDir = fs.mkdtempSync(path.join(os.tmpdir(), "collect-wheel-"));
-    const wheelPath = path.join(wheelDir, path.basename(url));
-    core.info(`Downloading wheel from ${url}...`);
-    await downloadToFile(url, wheelPath);
-    return wheelPath;
+async function runUnittestCollector(pythonCommand, testcasePath, metadataOutput) {
+    const safeTestcasePath = (0, validation_1.validatePath)(testcasePath, "testcase-path");
+    const safeMetadataOutput = (0, validation_1.validatePath)(metadataOutput, "metadata-output");
+    // 脚本路径：action 根目录下的 scripts/unittest_collector.py
+    const scriptPath = path.join(__dirname, "..", "scripts", "unittest_collector.py");
+    if (!fs.existsSync(scriptPath)) {
+        return {
+            success: false,
+            error: new Error(`unittest collector script not found: ${scriptPath}`),
+            stdout: "",
+            stderr: "",
+        };
+    }
+    let stdout = "";
+    let stderr = "";
+    const options = {
+        cwd: safeTestcasePath || undefined,
+        listeners: {
+            stdout: (data) => {
+                stdout += data.toString();
+            },
+            stderr: (data) => {
+                stderr += data.toString();
+            },
+        },
+        silent: true,
+        // 环境变量白名单：与 runPytest 保持一致，最小化子进程可触达能力 (FIND-01)
+        // unittest_collector.py 需要 git 命令获取仓库信息，但内部已清理 GIT_ASKPASS/SSH_ASKPASS
+        env: {
+            PATH: `${path.dirname(pythonCommand)}:/usr/bin`,
+            LANG: process.env.LANG || "C.UTF-8",
+            LANGUAGE: process.env.LANGUAGE || "",
+            PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || "1",
+        },
+    };
+    const args = [
+        scriptPath,
+        "--testcase-path",
+        safeTestcasePath,
+        "--metadata-output",
+        safeMetadataOutput,
+    ];
+    try {
+        await exec.exec(pythonCommand, args, options);
+        return { success: true, error: null, stdout, stderr };
+    }
+    catch (caughtError) {
+        return { success: false, error: caughtError, stdout, stderr };
+    }
 }
 /**
  * 主函数
@@ -170,10 +197,15 @@ async function run() {
     const venvPath = fs.mkdtempSync(path.join(os.tmpdir(), "collect-venv-"));
     try {
         console.log("=".repeat(60));
-        console.log("Starting pytest testcase collection...");
+        console.log("Starting testcase collection...");
         console.log("=".repeat(60));
         // Step 1: 获取输入参数
         core.startGroup("Step 1: Get input parameters");
+        const frameworkRaw = core.getInput("framework") || "pytest";
+        const framework = frameworkRaw.toLowerCase();
+        if (framework !== "pytest" && framework !== "unittest") {
+            throw new Error(`不支持的 framework 参数: ${frameworkRaw}，仅支持 pytest 或 unittest`);
+        }
         const testcasePathRaw = core.getInput("testcase-path", { required: false });
         const metadataOutputPathRaw = core.getInput("metadata-output-path") || "metadata_test.xml";
         const pytestConfigFileRaw = core.getInput("pytest-config-file") || "";
@@ -186,10 +218,9 @@ async function run() {
             ? (0, validation_1.validatePath)(pytestConfigFileRaw, "pytest-config-file")
             : "";
         const rootdir = rootdirRaw ? (0, validation_1.validatePath)(rootdirRaw, "rootdir") : "";
-        // 硬编码 wheel 下载地址
-        const testcaseCollectorUrl = "https://gitcode.com/openlibing/openlibing-pytest-executor/releases/download/pytest-testcase-collector-1.0.0/pytest_testcase_collector-1.0.0-py3-none-any.whl";
         let pythonCommand = "python3"; // 默认使用 python3
         console.log("Input parameters loaded:");
+        console.log(`  - framework: ${framework}`);
         console.log(`  - testcase-path: ${testcasePath || "(not specified)"}`);
         console.log(`  - metadata-output-path: ${outputPath}`);
         console.log(`  - pytest-config-file: ${pytestConfigFile || "(not specified)"}`);
@@ -200,7 +231,17 @@ async function run() {
         core.endGroup();
         // Step 2: 检查用例目录（省略 testcase-path 时跳过，由 pytest-config-file 的 testpaths 决定收集范围）
         core.startGroup("Step 2: Validate testcase path");
-        if (testcasePath) {
+        if (framework === "unittest") {
+            // unittest 模式必须指定 testcase-path
+            if (!testcasePath) {
+                throw new Error("unittest 模式必须指定 testcase-path");
+            }
+            if (!fs.existsSync(testcasePath)) {
+                throw new Error(`用例目录不存在: ${testcasePath}`);
+            }
+            console.log(`Testcase path validated: ${testcasePath}`);
+        }
+        else if (testcasePath) {
             if (!fs.existsSync(testcasePath)) {
                 throw new Error(`用例目录不存在: ${testcasePath}`);
             }
@@ -272,41 +313,56 @@ async function run() {
         console.log(`Python path: ${pythonCommand}`);
         console.log(`Pip path: ${pipCommand}`);
         core.endGroup();
-        // Step 4: 下载 wheel 后本地安装
-        core.startGroup("Step 4: Download and install pytest-testcase-collector");
-        const verifiedWheelPath = await downloadAndVerifyWheel(testcaseCollectorUrl);
-        try {
-            console.log("Installing pytest and verified pytest-testcase-collector...");
+        // Step 4: 通过 pip 安装 pytest-testcase-collector（unittest 模式跳过，使用内置独立脚本）
+        core.startGroup("Step 4: Install testcase-collector");
+        if (framework === "unittest") {
+            console.log("unittest mode: skip install, use built-in collector script");
+        }
+        else {
+            console.log("Installing pytest and pytest-testcase-collector...");
             await exec.exec(pipCommand, [
                 "install",
                 "pytest",
-                verifiedWheelPath,
+                "pytest-testcase-collector",
                 "-i",
                 pypiIndexUrl,
                 "-q",
             ]);
-            console.log("pytest-testcase-collector installed successfully");
-        }
-        finally {
-            // 清理整个临时 wheel 目录（含原始文件名的 wheel）
-            fs.rmSync(path.dirname(verifiedWheelPath), { recursive: true, force: true });
+            console.log("testcase-collector installed successfully");
         }
         core.endGroup();
-        // Step 5: 执行 pytest 收集
-        core.startGroup("Step 5: Execute pytest collection");
+        // Step 5: 执行测试用例收集
+        core.startGroup(`Step 5: Execute ${framework} collection`);
         console.log(`Metadata will be output to: ${outputPath}`);
-        // 检查配置文件（如果指定）
-        if (pytestConfigFile) {
+        // 检查配置文件（pytest 模式如果指定）
+        if (framework === "pytest" && pytestConfigFile) {
             if (!fs.existsSync(pytestConfigFile)) {
                 throw new Error(`pytest 配置文件不存在: ${pytestConfigFile}`);
             }
             console.log(`Config file exists: ${pytestConfigFile}`);
         }
-        console.log("Running pytest --collect-only...");
-        // Note: destructure as pytestError to avoid shadowing the core.error() call below.
-        const { success, error: pytestError, stdout, stderr } = await runPytest(pythonCommand, testcasePath, pytestConfigFile, rootdir, outputPath);
+        let success;
+        let collectError;
+        let stdout = "";
+        let stderr = "";
+        if (framework === "unittest") {
+            console.log("Running unittest metadata collector...");
+            const result = await runUnittestCollector(pythonCommand, testcasePath, outputPath);
+            success = result.success;
+            collectError = result.error;
+            stdout = result.stdout;
+            stderr = result.stderr;
+        }
+        else {
+            console.log("Running pytest --collect-only...");
+            const result = await runPytest(pythonCommand, testcasePath, pytestConfigFile, rootdir, outputPath);
+            success = result.success;
+            collectError = result.error;
+            stdout = result.stdout;
+            stderr = result.stderr;
+        }
         // 仅输出长度，不输出内容/预览，避免泄露子进程输出 (FIND-07)
-        console.log("pytest execution result:");
+        console.log(`${framework} execution result:`);
         console.log(`  - success: ${success}`);
         if (stdout) {
             console.log("  - stdout length:", stdout.length);
@@ -314,25 +370,25 @@ async function run() {
         if (stderr) {
             console.log("  - stderr length:", stderr.length);
         }
-        if (pytestError) {
-            console.log("  - error:", pytestError.message);
+        if (collectError) {
+            console.log("  - error:", collectError.message);
         }
         if (!success) {
-            // 临时调试：失败时输出 stdout/stderr 全量，便于定位 pytest 收集错误
+            // 临时调试：失败时输出 stdout/stderr 全量，便于定位收集错误
             // （成功时仍只输出长度，保留 FIND-07；定位后还原此块）
             if (stdout) {
-                console.log("----- pytest stdout start -----");
+                console.log(`----- ${framework} stdout start -----`);
                 console.log(stdout);
-                console.log("----- pytest stdout end -----");
+                console.log(`----- ${framework} stdout end -----`);
             }
             if (stderr) {
-                console.log("----- pytest stderr start -----");
+                console.log(`----- ${framework} stderr start -----`);
                 console.log(stderr);
-                console.log("----- pytest stderr end -----");
+                console.log(`----- ${framework} stderr end -----`);
             }
-            const errorMsg = `pytest 执行失败: ${pytestError ? pytestError.message : "(unknown)"}`;
+            const errorMsg = `${framework} 执行失败: ${collectError ? collectError.message : "(unknown)"}`;
             core.error(errorMsg);
-            throw new Error("pytest 执行失败，请查看上述错误信息");
+            throw new Error(`${framework} 执行失败，请查看上述错误信息`);
         }
         core.endGroup();
         // Step 6: 设置输出
