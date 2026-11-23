@@ -1,10 +1,14 @@
-name: 'Pytest Testcase Collector'
-description: 'Collect pytest test case metadata and generate XML report'
+name: 'Testcase Collector'
+description: 'Collect pytest/unittest test case metadata and generate XML report'
 author: 'openlibing'
 
 inputs:
+  framework:
+    description: '测试框架类型，支持 pytest 或 unittest，默认 pytest'
+    required: false
+    default: 'pytest'
   testcase-path:
-    description: '测试用例目录路径。指定 pytest-config-file 且由其 testpaths 决定收集范围时可省略'
+    description: '测试用例目录路径。unittest 模式必填；pytest 模式指定 pytest-config-file 且由其 testpaths 决定收集范围时可省略'
     required: false
     default: ''
   metadata-output-path:
@@ -12,10 +16,10 @@ inputs:
     required: false
     default: 'metadata_test.xml'
   pytest-config-file:
-    description: 'pytest 配置文件路径（如 pytest.ini）'
+    description: 'pytest 配置文件路径（如 pytest.ini），仅 pytest 模式生效'
     required: false
   rootdir:
-    description: 'pytest rootdir 覆盖路径。指定后通过 --rootdir 传给 pytest，作为 testpaths 与相对路径的解析基准；省略时由 pytest-config-file 所在目录或 testcase-path 决定'
+    description: 'pytest rootdir 覆盖路径。指定后通过 --rootdir 传给 pytest，作为 testpaths 与相对路径的解析基准；省略时由 pytest-config-file 所在目录或 testcase-path 决定。仅 pytest 模式生效'
     required: false
     default: ''
 
